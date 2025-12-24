@@ -18,6 +18,18 @@ pub struct CommitStats {
     pub ai_accepted: u32,
     #[serde(default)]
     pub time_waiting_for_ai: u64, // seconds
+    /// Total input (prompt) tokens consumed by AI responses in this commit (if available).
+    #[serde(default)]
+    pub ai_input_tokens: u64,
+    /// Total output (completion) tokens produced by AI responses in this commit (if available).
+    #[serde(default)]
+    pub ai_output_tokens: u64,
+    /// Total cache read input tokens (if reported by the agent/provider).
+    #[serde(default)]
+    pub ai_cache_read_input_tokens: u64,
+    /// Total cache creation input tokens (if reported by the agent/provider).
+    #[serde(default)]
+    pub ai_cache_creation_input_tokens: u64,
     #[serde(default)]
     pub git_diff_deleted_lines: u32,
     #[serde(default)]
@@ -257,9 +269,23 @@ pub fn write_stats_to_terminal(stats: &CommitStats, print: bool) -> String {
             "".to_string()
         };
 
+        let total_tokens = stats.ai_input_tokens + stats.ai_output_tokens;
+        let tokens_str = if total_tokens > 0 {
+            let mut s = format!(" | {} tokens", total_tokens);
+            if stats.ai_cache_read_input_tokens > 0 || stats.ai_cache_creation_input_tokens > 0 {
+                s.push_str(&format!(
+                    " (cache read {} / cache write {})",
+                    stats.ai_cache_read_input_tokens, stats.ai_cache_creation_input_tokens
+                ));
+            }
+            s
+        } else {
+            "".to_string()
+        };
+
         let ai_acceptance_str = format!(
-            "     \x1b[90m{:.0}% AI code accepted{}\x1b[0m",
-            ai_acceptance_percentage, waiting_time_str
+            "     \x1b[90m{:.0}% AI code accepted{}{}\x1b[0m",
+            ai_acceptance_percentage, waiting_time_str, tokens_str
         );
         output.push_str(&ai_acceptance_str);
         output.push('\n');
@@ -454,11 +480,15 @@ pub fn stats_for_commit_stats(
         ai_additions,
         ai_accepted,
         time_waiting_for_ai,
+        ai_input_tokens,
+        ai_output_tokens,
+        ai_cache_read_input_tokens,
+        ai_cache_creation_input_tokens,
     ) = if let Some(log) = &authorship_log {
         analyze_authorship_log(log)?
     } else {
         // No authorship log means no AI-authored lines
-        (0, 0, 0, 0, 0)
+        (0, 0, 0, 0, 0, 0, 0, 0, 0)
     };
 
     // Calculate human additions as the difference between total git diff and AI additions
@@ -475,6 +505,10 @@ pub fn stats_for_commit_stats(
         ai_additions,
         ai_accepted,
         time_waiting_for_ai,
+        ai_input_tokens,
+        ai_output_tokens,
+        ai_cache_read_input_tokens,
+        ai_cache_creation_input_tokens,
         git_diff_deleted_lines,
         git_diff_added_lines,
     })
@@ -529,12 +563,16 @@ fn get_git_diff_stats(repo: &Repository, commit_sha: &str) -> Result<(u32, u32),
 /// Analyze authorship log to extract statistics
 pub fn analyze_authorship_log(
     authorship_log: &AuthorshipLog,
-) -> Result<(u32, u32, u32, u32, u64), GitAiError> {
+) -> Result<(u32, u32, u32, u32, u64, u64, u64, u64, u64), GitAiError> {
     let mut human_additions = 0u32;
     let mut mixed_additions = 0u32;
     let mut ai_additions = 0u32;
     let mut ai_accepted = 0u32;
     let mut time_waiting_for_ai = 0u64;
+    let mut ai_input_tokens = 0u64;
+    let mut ai_output_tokens = 0u64;
+    let mut ai_cache_read_input_tokens = 0u64;
+    let mut ai_cache_creation_input_tokens = 0u64;
 
     // Count lines by author type
     for file_attestation in &authorship_log.attestations {
@@ -575,6 +613,18 @@ pub fn analyze_authorship_log(
                     messages: prompt_record.messages.clone(),
                 };
                 time_waiting_for_ai += calculate_waiting_time(&transcript);
+
+                // Sum token usage for this prompt session if available
+                for msg in &prompt_record.messages {
+                    if let Message::Assistant { usage: Some(usage), .. } = msg {
+                        ai_input_tokens += usage.input_tokens.unwrap_or(0) as u64;
+                        ai_output_tokens += usage.output_tokens.unwrap_or(0) as u64;
+                        ai_cache_read_input_tokens +=
+                            usage.cache_read_input_tokens.unwrap_or(0) as u64;
+                        ai_cache_creation_input_tokens +=
+                            usage.cache_creation_input_tokens.unwrap_or(0) as u64;
+                    }
+                }
             } else {
                 // Human-authored lines
                 human_additions += lines_in_entry;
@@ -588,6 +638,10 @@ pub fn analyze_authorship_log(
         ai_additions,
         ai_accepted,
         time_waiting_for_ai,
+        ai_input_tokens,
+        ai_output_tokens,
+        ai_cache_read_input_tokens,
+        ai_cache_creation_input_tokens,
     ))
 }
 
@@ -656,6 +710,10 @@ mod tests {
             ai_additions: 100,
             ai_accepted: 25,
             time_waiting_for_ai: 72009, // 1 minute 30 seconds
+            ai_input_tokens: 0,
+            ai_output_tokens: 0,
+            ai_cache_read_input_tokens: 0,
+            ai_cache_creation_input_tokens: 0,
             git_diff_deleted_lines: 15,
             git_diff_added_lines: 80,
         };
@@ -670,6 +728,10 @@ mod tests {
             ai_additions: 100,
             ai_accepted: 95,
             time_waiting_for_ai: 45,
+            ai_input_tokens: 0,
+            ai_output_tokens: 0,
+            ai_cache_read_input_tokens: 0,
+            ai_cache_creation_input_tokens: 0,
             git_diff_deleted_lines: 0,
             git_diff_added_lines: 100,
         };
@@ -684,6 +746,10 @@ mod tests {
             ai_additions: 0,
             ai_accepted: 0,
             time_waiting_for_ai: 0,
+            ai_input_tokens: 0,
+            ai_output_tokens: 0,
+            ai_cache_read_input_tokens: 0,
+            ai_cache_creation_input_tokens: 0,
             git_diff_deleted_lines: 10,
             git_diff_added_lines: 75,
         };
@@ -698,6 +764,10 @@ mod tests {
             ai_additions: 100,
             ai_accepted: 95,
             time_waiting_for_ai: 30,
+            ai_input_tokens: 0,
+            ai_output_tokens: 0,
+            ai_cache_read_input_tokens: 0,
+            ai_cache_creation_input_tokens: 0,
             git_diff_deleted_lines: 0,
             git_diff_added_lines: 102,
         };
@@ -712,6 +782,10 @@ mod tests {
             ai_additions: 0,
             ai_accepted: 0,
             time_waiting_for_ai: 0,
+            ai_input_tokens: 0,
+            ai_output_tokens: 0,
+            ai_cache_read_input_tokens: 0,
+            ai_cache_creation_input_tokens: 0,
             git_diff_deleted_lines: 25,
             git_diff_added_lines: 0,
         };
@@ -729,6 +803,10 @@ mod tests {
             ai_additions: 100,
             ai_accepted: 25,
             time_waiting_for_ai: 72009, // 1 minute 30 seconds
+            ai_input_tokens: 0,
+            ai_output_tokens: 0,
+            ai_cache_read_input_tokens: 0,
+            ai_cache_creation_input_tokens: 0,
             git_diff_deleted_lines: 15,
             git_diff_added_lines: 80,
         };
@@ -743,6 +821,10 @@ mod tests {
             ai_additions: 100,
             ai_accepted: 95,
             time_waiting_for_ai: 45,
+            ai_input_tokens: 0,
+            ai_output_tokens: 0,
+            ai_cache_read_input_tokens: 0,
+            ai_cache_creation_input_tokens: 0,
             git_diff_deleted_lines: 0,
             git_diff_added_lines: 100,
         };
@@ -757,6 +839,10 @@ mod tests {
             ai_additions: 0,
             ai_accepted: 0,
             time_waiting_for_ai: 0,
+            ai_input_tokens: 0,
+            ai_output_tokens: 0,
+            ai_cache_read_input_tokens: 0,
+            ai_cache_creation_input_tokens: 0,
             git_diff_deleted_lines: 10,
             git_diff_added_lines: 75,
         };
@@ -771,6 +857,10 @@ mod tests {
             ai_additions: 100,
             ai_accepted: 95,
             time_waiting_for_ai: 30,
+            ai_input_tokens: 0,
+            ai_output_tokens: 0,
+            ai_cache_read_input_tokens: 0,
+            ai_cache_creation_input_tokens: 0,
             git_diff_deleted_lines: 0,
             git_diff_added_lines: 102,
         };
@@ -785,6 +875,10 @@ mod tests {
             ai_additions: 0,
             ai_accepted: 0,
             time_waiting_for_ai: 0,
+            ai_input_tokens: 0,
+            ai_output_tokens: 0,
+            ai_cache_read_input_tokens: 0,
+            ai_cache_creation_input_tokens: 0,
             git_diff_deleted_lines: 25,
             git_diff_added_lines: 0,
         };

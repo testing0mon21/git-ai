@@ -246,6 +246,10 @@ fn calculate_range_stats_direct(
         ai_additions,
         ai_accepted,
         time_waiting_for_ai: 0,
+        ai_input_tokens: 0,
+        ai_output_tokens: 0,
+        ai_cache_read_input_tokens: 0,
+        ai_cache_creation_input_tokens: 0,
         git_diff_deleted_lines,
         git_diff_added_lines,
     })

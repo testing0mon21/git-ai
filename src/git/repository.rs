@@ -974,21 +974,23 @@ impl Repository {
         Ok(String::from_utf8(output.stdout)?.trim().to_string())
     }
 
-    // Merge two trees, producing an index that reflects the result of the merge. The index may be written as-is to the working directory or checked out. If the index is to be converted to a tree, the caller should resolve any conflicts that arose as part of the merge.
-    pub fn merge_trees_favor_ours(
+    /// Perform a 3-way merge and return the merged tree OID.
+    ///
+    /// Uses `git merge-tree --write-tree` and resolves conflicts by favoring "ours".
+    pub fn merge_commits_favor_ours(
         &self,
-        ancestor_tree: &Tree<'_>,
-        our_tree: &Tree<'_>,
-        their_tree: &Tree<'_>,
+        base_commit: &Commit<'_>,
+        ours_commit: &Commit<'_>,
+        theirs_commit: &Commit<'_>,
     ) -> Result<String, GitAiError> {
         let mut args = self.global_args_for_exec();
         args.push("merge-tree".to_string());
         args.push("--write-tree".to_string());
-        args.push(format!("--merge-base={}", ancestor_tree.oid));
+        args.push(format!("--merge-base={}", base_commit.id()));
         args.push("-X".to_string());
         args.push("ours".to_string());
-        args.push(our_tree.oid.to_string());
-        args.push(their_tree.oid.to_string());
+        args.push(ours_commit.id());
+        args.push(theirs_commit.id());
         let output = exec_git(&args)?;
         Ok(String::from_utf8(output.stdout)?.trim().to_string())
     }

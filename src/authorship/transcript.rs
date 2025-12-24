@@ -1,5 +1,20 @@
 use serde::{Deserialize, Serialize};
 
+/// Optional token/usage information for a model response.
+///
+/// This is intentionally flexible to support multiple agent formats.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MessageUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u32>,
+}
+
 /// Represents a single message in an AI transcript
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -13,6 +28,9 @@ pub enum Message {
         text: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         timestamp: Option<String>,
+        /// Optional token usage reported by the agent for this response.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<MessageUsage>,
     },
     ToolUse {
         name: String,
@@ -30,7 +48,11 @@ impl Message {
 
     /// Create an assistant message
     pub fn assistant(text: String, timestamp: Option<String>) -> Self {
-        Message::Assistant { text, timestamp }
+        Message::Assistant {
+            text,
+            timestamp,
+            usage: None,
+        }
     }
 
     /// Create a tool use message
@@ -146,6 +168,23 @@ impl AiTranscript {
                     }
                     Some("assistant") => {
                         // Handle assistant messages
+                        let usage = raw_entry
+                            .get("message")
+                            .and_then(|m| m.get("usage"))
+                            .and_then(|u| u.as_object())
+                            .map(|u| MessageUsage {
+                                input_tokens: u.get("input_tokens").and_then(|v| v.as_u64()).map(|v| v as u32),
+                                output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).map(|v| v as u32),
+                                cache_creation_input_tokens: u
+                                    .get("cache_creation_input_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .map(|v| v as u32),
+                                cache_read_input_tokens: u
+                                    .get("cache_read_input_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .map(|v| v as u32),
+                            });
+
                         if let Some(content_array) = raw_entry["message"]["content"].as_array() {
                             for item in content_array {
                                 match item["type"].as_str() {
@@ -155,6 +194,7 @@ impl AiTranscript {
                                                 transcript.add_message(Message::Assistant {
                                                     text: text.to_string(),
                                                     timestamp: timestamp.clone(),
+                                                    usage: usage.clone(),
                                                 });
                                             }
                                         }

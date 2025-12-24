@@ -7,8 +7,10 @@ use crate::{
 };
 use chrono::{TimeZone, Utc};
 use rusqlite::{Connection, OpenFlags};
-use std::env;
 use std::path::{Path, PathBuf};
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use std::env;
 
 pub struct AgentCheckpointFlags {
     pub hook_input: Option<String>,
@@ -799,6 +801,7 @@ impl GithubCopilotPreset {
                     transcript.add_message(Message::Assistant {
                         text: assistant_text_accumulator.trim().to_string(),
                         timestamp: assistant_ts,
+                        usage: None,
                     });
                 }
             }
@@ -812,5 +815,129 @@ impl GithubCopilotPreset {
         }
 
         Ok((transcript, detected_model, Some(edited_filepaths)))
+    }
+}
+
+// Rooode to checkpoint preset (plugin integration via stdin JSON)
+//
+// This is intentionally close to `agent-v1`, but provides a stable
+// `git-ai checkpoint rooode` entrypoint for the Rooode plugin.
+pub struct RooodePreset;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum RooodeInput {
+    Human {
+        repo_working_dir: String,
+        will_edit_filepaths: Option<Vec<String>>,
+    },
+    AiAgent {
+        repo_working_dir: String,
+        edited_filepaths: Option<Vec<String>>,
+        /// Full transcript for the conversation (recommended). May include per-message usage.
+        transcript: AiTranscript,
+        /// Optional agent name override; defaults to "rooode".
+        #[serde(default)]
+        agent_name: Option<String>,
+        /// Model name (optional; defaults to "unknown").
+        #[serde(default)]
+        model: Option<String>,
+        conversation_id: String,
+    },
+}
+
+impl AgentCheckpointPreset for RooodePreset {
+    fn run(&self, flags: AgentCheckpointFlags) -> Result<AgentRunResult, GitAiError> {
+        let hook_input_json = flags.hook_input.ok_or_else(|| {
+            GitAiError::PresetError("hook_input is required for Rooode preset".to_string())
+        })?;
+
+        let input: RooodeInput = serde_json::from_str(&hook_input_json).map_err(|e| {
+            GitAiError::PresetError(format!(
+                "Invalid Rooode preset JSON (expected agent-v1-like shape): {}",
+                e
+            ))
+        })?;
+
+        match input {
+            RooodeInput::Human {
+                repo_working_dir,
+                will_edit_filepaths,
+            } => Ok(AgentRunResult {
+                agent_id: AgentId {
+                    tool: "rooode".to_string(),
+                    id: "rooode".to_string(),
+                    model: "rooode".to_string(),
+                },
+                checkpoint_kind: CheckpointKind::Human,
+                transcript: None,
+                repo_working_dir: Some(repo_working_dir),
+                edited_filepaths: None,
+                will_edit_filepaths,
+            }),
+            RooodeInput::AiAgent {
+                repo_working_dir,
+                edited_filepaths,
+                transcript,
+                agent_name,
+                model,
+                conversation_id,
+            } => Ok(AgentRunResult {
+                agent_id: AgentId {
+                    tool: agent_name.unwrap_or_else(|| "rooode".to_string()),
+                    id: conversation_id,
+                    model: model.unwrap_or_else(|| "unknown".to_string()),
+                },
+                checkpoint_kind: CheckpointKind::AiAgent,
+                transcript: Some(transcript),
+                repo_working_dir: Some(repo_working_dir),
+                edited_filepaths,
+                will_edit_filepaths: None,
+            }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rooode_preset_accepts_assistant_usage() {
+        let payload = serde_json::json!({
+            "type": "ai_agent",
+            "repo_working_dir": "/tmp",
+            "edited_filepaths": ["src/lib.rs"],
+            "transcript": {
+                "messages": [
+                    { "type": "user", "text": "hi" },
+                    { "type": "assistant", "text": "hello", "usage": { "input_tokens": 10, "output_tokens": 5 } }
+                ]
+            },
+            "conversation_id": "conv_1",
+            "model": "test-model"
+        });
+
+        let result = RooodePreset
+            .run(AgentCheckpointFlags {
+                hook_input: Some(payload.to_string()),
+            })
+            .expect("rooode preset should parse");
+
+        assert_eq!(result.checkpoint_kind, CheckpointKind::AiAgent);
+        assert_eq!(result.agent_id.tool, "rooode");
+        assert_eq!(result.agent_id.id, "conv_1");
+        assert_eq!(result.agent_id.model, "test-model");
+
+        let transcript = result.transcript.expect("transcript should be present");
+        assert_eq!(transcript.messages.len(), 2);
+
+        match &transcript.messages[1] {
+            Message::Assistant { usage: Some(u), .. } => {
+                assert_eq!(u.input_tokens, Some(10));
+                assert_eq!(u.output_tokens, Some(5));
+            }
+            _ => panic!("expected assistant message with usage"),
+        }
     }
 }

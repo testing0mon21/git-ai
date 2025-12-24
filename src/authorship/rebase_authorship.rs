@@ -817,12 +817,8 @@ fn apply_diff_as_merge_commit(
     let ours_commit = repo.find_commit(old_head_sha.to_string())?;
     let theirs_commit = repo.find_commit(new_commit_parent.to_string())?;
 
-    let base_tree = base_commit.tree()?;
-    let ours_tree = ours_commit.tree()?;
-    let theirs_tree = theirs_commit.tree()?;
-
-    // TODO Verify new version is correct (we should be getting a tree oid straight back from merge_trees_favor_ours)
-    let tree_oid = repo.merge_trees_favor_ours(&base_tree, &ours_tree, &theirs_tree)?;
+    // Get a merged tree oid straight back from merge-tree.
+    let tree_oid = repo.merge_commits_favor_ours(&base_commit, &ours_commit, &theirs_commit)?;
     let merged_tree = repo.find_tree(tree_oid)?;
 
     // Create the hanging commit with ONLY the feature branch (ours) as parent
