@@ -4,7 +4,7 @@ use crate::authorship::working_log::{AgentId, CheckpointKind};
 use crate::commands;
 use crate::commands::checkpoint_agent::agent_presets::{
     AgentCheckpointFlags, AgentCheckpointPreset, AgentRunResult, ClaudePreset, CursorPreset,
-    GithubCopilotPreset, RooodePreset,
+    GithubCopilotPreset, RooCodePreset,
 };
 use crate::commands::checkpoint_agent::agent_v1_preset::AgentV1Preset;
 use crate::config;
@@ -73,7 +73,7 @@ fn print_help() {
     eprintln!("");
     eprintln!("Commands:");
     eprintln!("  checkpoint         Checkpoint working changes and attribute author");
-    eprintln!("    Presets: claude, cursor, github-copilot, rooode, mock_ai");
+    eprintln!("    Presets: claude, cursor, github-copilot, roocode, mock_ai");
     eprintln!(
         "    --hook-input <json|stdin>   JSON payload required by presets, or 'stdin' to read from stdin"
     );
@@ -201,8 +201,9 @@ fn handle_checkpoint(args: &[String]) {
                     }
                 }
             }
-            "rooode" => {
-                match RooodePreset.run(AgentCheckpointFlags {
+            // Backwards-compatible alias: "rooode" -> "roocode"
+            "roocode" | "rooode" => {
+                match RooCodePreset.run(AgentCheckpointFlags {
                     hook_input: hook_input.clone(),
                 }) {
                     Ok(agent_run) => {
@@ -212,7 +213,7 @@ fn handle_checkpoint(args: &[String]) {
                         agent_run_result = Some(agent_run);
                     }
                     Err(e) => {
-                        eprintln!("Rooode preset error: {}", e);
+                        eprintln!("RooCode preset error: {}", e);
                         std::process::exit(1);
                     }
                 }

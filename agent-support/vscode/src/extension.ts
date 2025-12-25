@@ -99,24 +99,36 @@ class AIEditManager {
           throw new Error('No workspace base storage path found');
         }
         const params = JSON.parse(snapshotInfo.uri.query);
-        if (!params.sessionId || !params.requestId) {
-          throw new Error('Missing required parameters in snapshot URI query');
-        }
-        let sessionId = params.sessionId || null;
-        let requestId = params.requestId || null;
-        let chatSessionPath = path.join(this.workspaceBaseStoragePath, 'chatSessions', sessionId+'.json');
-        // Get the workspace folder for the file, fallback to workspaceBaseStoragePath if not found
-        let workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+
+        // Get the workspace folder for the file
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
         if (!workspaceFolder) {
           throw new Error('No workspace folder found for file path: ' + filePath);
         }
-        console.log('[git-ai] AIEditManager: AI edit detected for', filePath, '- triggering AI checkpoint (sessionId:', sessionId, ', requestId:', requestId, ', chatSessionPath:', chatSessionPath, ', workspaceFolder:', workspaceFolder.uri.fsPath, ')');
-        this.checkpoint("ai", JSON.stringify({
-          chatSessionPath,
-          sessionId,
-          requestId,
-          workspaceFolder: workspaceFolder.uri.fsPath,
-        }));
+
+        // Provider routing:
+        // - GitHub Copilot: sessionId + requestId (existing behavior)
+        // - RooCode: best-effort detection via query fields; we forward an agent-v1-like payload with optional token usage
+        if (params.sessionId && params.requestId) {
+          const sessionId = params.sessionId || null;
+          const requestId = params.requestId || null;
+          const chatSessionPath = path.join(this.workspaceBaseStoragePath, 'chatSessions', sessionId + '.json');
+          console.log('[git-ai] AIEditManager: AI edit detected (GitHub Copilot) for', filePath, '- triggering AI checkpoint (sessionId:', sessionId, ', requestId:', requestId, ', chatSessionPath:', chatSessionPath, ', workspaceFolder:', workspaceFolder.uri.fsPath, ')');
+          this.checkpoint("ai", JSON.stringify({
+            chatSessionPath,
+            sessionId,
+            requestId,
+            workspaceFolder: workspaceFolder.uri.fsPath,
+          }), "github-copilot");
+        } else if (this.looksLikeRooCode(params)) {
+          const hookInput = this.buildRooCodeHookInput(params, filePath, workspaceFolder.uri.fsPath);
+          console.log('[git-ai] AIEditManager: AI edit detected (RooCode) for', filePath, '- triggering AI checkpoint');
+          this.checkpoint("ai", hookInput, "roocode");
+        } else {
+          // Unknown snapshot format -> treat as human
+          console.log('[git-ai] AIEditManager: Unrecognized snapshot query shape for', filePath, '- triggering human checkpoint');
+          this.checkpoint("human");
+        }
       } catch (e) {
         console.error('[git-ai] AIEditManager: Failed to parse snapshot URI query as JSON. Unable to trigger AI checkpoint', e);
       }
@@ -135,7 +147,101 @@ class AIEditManager {
     this.checkpoint("human");
   }
 
-  async checkpoint(author: "human" | "ai", hookInput?: string): Promise<boolean> {
+  private looksLikeRooCode(params: any): boolean {
+    // Best-effort heuristics: RooCode may surface different fields than Copilot.
+    const haystack = JSON.stringify({
+      provider: params?.provider,
+      source: params?.source,
+      agent: params?.agent,
+      extensionId: params?.extensionId,
+      chatProviderId: params?.chatProviderId,
+    }).toLowerCase();
+
+    if (haystack.includes("roocode") || haystack.includes("roo-code") || haystack.includes("roo code")) {
+      return true;
+    }
+
+    // Some integrations may embed a namespaced object
+    if (params?.roocode || params?.rooCode || params?.roo_code) {
+      return true;
+    }
+
+    // If token usage is present but Copilot keys are absent, assume a non-Copilot chat provider (often RooCode)
+    if (!params?.requestId && (params?.usage || params?.inputTokens || params?.outputTokens || params?.input_tokens || params?.output_tokens)) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private buildRooCodeHookInput(params: any, filePath: string, workspaceRoot: string): string {
+    const relPath = path.isAbsolute(filePath) ? path.relative(workspaceRoot, filePath) : filePath;
+
+    const usageObj = params.usage || params.roocode?.usage || params.rooCode?.usage || null;
+    const usage = usageObj ? {
+      input_tokens: usageObj.input_tokens ?? usageObj.inputTokens ?? params.input_tokens ?? params.inputTokens ?? null,
+      output_tokens: usageObj.output_tokens ?? usageObj.outputTokens ?? params.output_tokens ?? params.outputTokens ?? null,
+      cache_read_input_tokens: usageObj.cache_read_input_tokens ?? usageObj.cacheReadInputTokens ?? null,
+      cache_creation_input_tokens: usageObj.cache_creation_input_tokens ?? usageObj.cacheCreationInputTokens ?? null,
+    } : {
+      input_tokens: params.input_tokens ?? params.inputTokens ?? null,
+      output_tokens: params.output_tokens ?? params.outputTokens ?? null,
+      cache_read_input_tokens: params.cache_read_input_tokens ?? params.cacheReadInputTokens ?? null,
+      cache_creation_input_tokens: params.cache_creation_input_tokens ?? params.cacheCreationInputTokens ?? null,
+    };
+
+    // Minimal transcript to carry token usage (if present)
+    const transcriptMessages: any[] = [
+      { type: "user", text: params.prompt ?? params.userMessage ?? "RooCode prompt" },
+      {
+        type: "assistant",
+        text: params.response ?? params.assistantMessage ?? "RooCode response",
+        usage: (usage.input_tokens || usage.output_tokens || usage.cache_read_input_tokens || usage.cache_creation_input_tokens)
+          ? {
+              input_tokens: usage.input_tokens ?? undefined,
+              output_tokens: usage.output_tokens ?? undefined,
+              cache_read_input_tokens: usage.cache_read_input_tokens ?? undefined,
+              cache_creation_input_tokens: usage.cache_creation_input_tokens ?? undefined,
+            }
+          : undefined,
+      },
+    ];
+
+    const conversationId =
+      params.conversationId ||
+      params.conversation_id ||
+      params.sessionId ||
+      params.session_id ||
+      params.threadId ||
+      params.thread_id ||
+      "unknown";
+
+    const model =
+      params.model ||
+      params.modelId ||
+      params.model_id ||
+      params.roocode?.model ||
+      params.rooCode?.model ||
+      "unknown";
+
+    const agentName =
+      params.agentName ||
+      params.agent_name ||
+      params.provider ||
+      "roocode";
+
+    return JSON.stringify({
+      type: "ai_agent",
+      repo_working_dir: workspaceRoot,
+      edited_filepaths: [relPath],
+      transcript: { messages: transcriptMessages },
+      agent_name: agentName,
+      model: model,
+      conversation_id: String(conversationId),
+    });
+  }
+
+  async checkpoint(author: "human" | "ai", hookInput?: string, preset?: string): Promise<boolean> {
     if (!(await this.checkGitAi())) {
       return false;
     }
@@ -174,7 +280,7 @@ class AIEditManager {
 
       const args = ["checkpoint"];
       if (author === "ai") {
-        args.push("github-copilot");
+        args.push(preset || "github-copilot");
       }
       if (hookInput) {
         args.push("--hook-input", "stdin");

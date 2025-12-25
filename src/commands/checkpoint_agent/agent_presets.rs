@@ -818,15 +818,15 @@ impl GithubCopilotPreset {
     }
 }
 
-// Rooode to checkpoint preset (plugin integration via stdin JSON)
+// RooCode to checkpoint preset (plugin integration via stdin JSON)
 //
 // This is intentionally close to `agent-v1`, but provides a stable
-// `git-ai checkpoint rooode` entrypoint for the Rooode plugin.
-pub struct RooodePreset;
+// `git-ai checkpoint roocode` entrypoint for the RooCode plugin.
+pub struct RooCodePreset;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum RooodeInput {
+enum RooCodeInput {
     Human {
         repo_working_dir: String,
         will_edit_filepaths: Option<Vec<String>>,
@@ -836,7 +836,7 @@ enum RooodeInput {
         edited_filepaths: Option<Vec<String>>,
         /// Full transcript for the conversation (recommended). May include per-message usage.
         transcript: AiTranscript,
-        /// Optional agent name override; defaults to "rooode".
+        /// Optional agent name override; defaults to "roocode".
         #[serde(default)]
         agent_name: Option<String>,
         /// Model name (optional; defaults to "unknown").
@@ -846,28 +846,28 @@ enum RooodeInput {
     },
 }
 
-impl AgentCheckpointPreset for RooodePreset {
+impl AgentCheckpointPreset for RooCodePreset {
     fn run(&self, flags: AgentCheckpointFlags) -> Result<AgentRunResult, GitAiError> {
         let hook_input_json = flags.hook_input.ok_or_else(|| {
-            GitAiError::PresetError("hook_input is required for Rooode preset".to_string())
+            GitAiError::PresetError("hook_input is required for RooCode preset".to_string())
         })?;
 
-        let input: RooodeInput = serde_json::from_str(&hook_input_json).map_err(|e| {
+        let input: RooCodeInput = serde_json::from_str(&hook_input_json).map_err(|e| {
             GitAiError::PresetError(format!(
-                "Invalid Rooode preset JSON (expected agent-v1-like shape): {}",
+                "Invalid RooCode preset JSON (expected agent-v1-like shape): {}",
                 e
             ))
         })?;
 
         match input {
-            RooodeInput::Human {
+            RooCodeInput::Human {
                 repo_working_dir,
                 will_edit_filepaths,
             } => Ok(AgentRunResult {
                 agent_id: AgentId {
-                    tool: "rooode".to_string(),
-                    id: "rooode".to_string(),
-                    model: "rooode".to_string(),
+                    tool: "roocode".to_string(),
+                    id: "roocode".to_string(),
+                    model: "roocode".to_string(),
                 },
                 checkpoint_kind: CheckpointKind::Human,
                 transcript: None,
@@ -875,7 +875,7 @@ impl AgentCheckpointPreset for RooodePreset {
                 edited_filepaths: None,
                 will_edit_filepaths,
             }),
-            RooodeInput::AiAgent {
+            RooCodeInput::AiAgent {
                 repo_working_dir,
                 edited_filepaths,
                 transcript,
@@ -884,7 +884,7 @@ impl AgentCheckpointPreset for RooodePreset {
                 conversation_id,
             } => Ok(AgentRunResult {
                 agent_id: AgentId {
-                    tool: agent_name.unwrap_or_else(|| "rooode".to_string()),
+                    tool: agent_name.unwrap_or_else(|| "roocode".to_string()),
                     id: conversation_id,
                     model: model.unwrap_or_else(|| "unknown".to_string()),
                 },
@@ -903,7 +903,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_rooode_preset_accepts_assistant_usage() {
+    fn test_roocode_preset_accepts_assistant_usage() {
         let payload = serde_json::json!({
             "type": "ai_agent",
             "repo_working_dir": "/tmp",
@@ -918,14 +918,14 @@ mod tests {
             "model": "test-model"
         });
 
-        let result = RooodePreset
+        let result = RooCodePreset
             .run(AgentCheckpointFlags {
                 hook_input: Some(payload.to_string()),
             })
-            .expect("rooode preset should parse");
+            .expect("roocode preset should parse");
 
         assert_eq!(result.checkpoint_kind, CheckpointKind::AiAgent);
-        assert_eq!(result.agent_id.tool, "rooode");
+        assert_eq!(result.agent_id.tool, "roocode");
         assert_eq!(result.agent_id.id, "conv_1");
         assert_eq!(result.agent_id.model, "test-model");
 
